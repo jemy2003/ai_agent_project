@@ -1,0 +1,14 @@
+# Empêche d'envoyer les infos sensibles
+.env
+
+# Fichiers temporaires Python
+__pycache__/
+*.pyc
+
+# Fichiers temporaires VSCode, PyCharm
+.vscode/
+.idea/
+
+# Fichiers Docker temporaires
+*.log
+*.tmp
