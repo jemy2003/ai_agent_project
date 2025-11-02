@@ -1,58 +1,57 @@
-import requests
-import psycopg2
 import os
-import re
+import json
+import psycopg2
+import requests
+from dotenv import load_dotenv
 
-# ===============================
-# Configuration Ollama
-# ===============================
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434/api/generate")
-MODEL = os.getenv("MODEL_NAME", "llama3")
+# Charger les variables d'environnement (.env)
+load_dotenv()
 
-# ===============================
-# Fonction pour interroger Ollama
-# ===============================
-def ask_model(prompt):
+# 🔑 Clé et modèle Mistral AI
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MISTRAL_MODEL = os.getenv("MODEL_NAME", "mistral-small-latest")
+
+# 📦 Fonction pour interroger Mistral
+def ask_model(prompt: str):
     """
-    Envoie un prompt à Ollama et récupère la réponse textuelle complète.
+    Envoie un prompt à Mistral AI et récupère uniquement la réponse texte (chat completions).
     """
     try:
         response = requests.post(
-            OLLAMA_URL,
-            json={"model": MODEL, "prompt": prompt},
-            stream=True
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MISTRAL_MODEL,
+                "messages": [
+                    {"role": "system", "content": "Tu es un assistant SQL expert."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.1,
+                "max_tokens": 300
+            },
+            timeout=30
         )
-        response.raise_for_status()
 
-        full_output = ""
-        for line in response.iter_lines():
-            if line:
-                try:
-                    data = line.decode("utf-8")
-                    if '"response":"' in data:
-                        text_part = data.split('"response":"')[1].split('"', 1)[0]
-                        full_output += text_part
-                except Exception:
-                    pass
+        if response.status_code != 200:
+            print(f"❌ Erreur Mistral API : {response.text}")
+            return None
 
-        return full_output.strip()
+        data = response.json()
+        # Extraire le contenu du message du modèle
+        return data["choices"][0]["message"]["content"].strip()
 
     except Exception as e:
-        print(f"❌ Erreur lors de l'appel à Ollama : {e}")
+        print(f"❌ Erreur lors de l'appel à Mistral AI : {e}")
         return None
 
-# ===============================
-# Fonction principale agent
-# ===============================
+
+# ⚙️ Fonction principale de traitement
 def handle_user_question(question):
-    """
-    Transforme la question utilisateur en requête SQL, exécute la requête
-    et affiche le résultat.
-    """
     print(f"\n🧠 Question utilisateur : {question}")
 
-    # Prompt amélioré pour générer seulement la requête SQL
-    # Prompt amélioré pour générer seulement la requête SQL
     system_prompt = f"""
 Tu es un assistant SQL expert.
 Ta mission : répondre à la question avec une REQUÊTE SQL valide pour PostgreSQL.
@@ -61,23 +60,26 @@ Table unique : linkedin_jobs(job_title, company_name, time_posted, num_applicant
 ⚠️ IMPORTANT :
 - La colonne 'time_posted' contient le nombre de secondes écoulées depuis la publication.
 - Pour obtenir les postes les plus récents, trier par 'time_posted' croissant.
-- Ne renvoie que la requête SQL, sans ``` ni texte explicatif.
+- Ne renvoie que la requête SQL pure, sans ``` ni texte explicatif.
 
 Question : {question}
 """
-
 
     sql_query = ask_model(system_prompt)
 
     if not sql_query:
         print("❌ Impossible d'obtenir une requête du modèle.")
-        return
+        return []
 
-    # 🔧 Nettoyage du SQL renvoyé par le modèle
-    sql_query = re.sub(r"```[a-zA-Z]*", "", sql_query)  # supprime ```sql ou ```python
-    sql_query = sql_query.replace("```", "").replace("\\n", " ").strip()
+    # 🧹 Nettoyage de la requête
+    sql_query = (
+        sql_query.replace("```sql", "")
+                 .replace("```", "")
+                 .replace("\n", " ")
+                 .strip()
+    )
 
-    print(f"\n📜 Requête SQL générée :\n{sql_query}")
+    print(f"\n📜 Requête SQL générée nettoyée :\n{sql_query}")
 
     # Connexion PostgreSQL
     conn = psycopg2.connect(
@@ -89,31 +91,23 @@ Question : {question}
     )
     cur = conn.cursor()
 
+    results = []
     try:
         cur.execute(sql_query)
         rows = cur.fetchall()
-        print("\n📊 Résultats :")
         for row in rows:
-            print(row)
-
-        # Optionnel : reformulation en langage naturel
-        print("\n📝 Résumé lisible :")
-        for idx, row in enumerate(rows, 1):
-            id , job_title, company_name, time_posted, num_applicants = row
-            print(f"{idx}. {job_title} chez {company_name} ({time_posted}, {num_applicants} candidats)")
-
+            results.append({
+                "id": row[0],
+                "job_title": row[1],
+                "company_name": row[2],
+                "time_posted": row[3],
+                "num_applicants": row[4]
+            })
     except Exception as e:
-        print(f"⚠️ Erreur d'exécution SQL : {e}")
+        print(f"⚠️ Erreur SQL : {e}")
     finally:
         cur.close()
         conn.close()
 
-# ===============================
-# Exemple d'utilisation
-# ===============================
-if __name__ == "__main__":
-    while True:
-        question = input("💬 Pose une question (ou 'exit' pour quitter) : ")
-        if question.lower() == "exit":
-            break
-        handle_user_question(question)
+    return results
+
